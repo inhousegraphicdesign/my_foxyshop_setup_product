@@ -1,0 +1,186 @@
+<?php // Custom foxyshop_setup_product function to set custom featured image for FoxyCart using ACF custom field data
+// Sets up the $product array
+function my_foxyshop_setup_product($thepost = false, $shortcut = false) {
+	global $foxyshop_settings, $product;
+
+	//Product ID
+	if (gettype($thepost) == "integer") {
+		$newposts = get_posts(array("post_type" => "foxyshop_product", "page_id" => $thepost));
+		foreach ($newposts as $newpost) {
+			$thepost = $newpost;
+		}
+
+	//Product Slug
+	} elseif (gettype($thepost) == "string") {
+		$newposts = get_posts(array("post_type" => "foxyshop_product", "name" => $thepost));
+		foreach ($newposts as $newpost) {
+			$thepost = $newpost;
+		}
+
+	//Product Object
+	} elseif (!$thepost) {
+		global $post;
+		$thepost = $post;
+	}
+
+	//Skip if $product is already set and hasn't changed ID's
+	if (isset($product)) {
+		if ($product['id'] == $thepost->ID) return $product;
+	}
+
+	$new_product = array();
+	$new_product['id'] = $thepost->ID;
+	$new_product['name'] = trim($thepost->post_title);
+	$new_product['code'] = (get_post_meta($thepost->ID,'_code', 1) ? get_post_meta($thepost->ID,'_code', 1) : $thepost->ID);
+	$new_product['description'] = apply_filters('the_content', $thepost->post_content);
+	$new_product['short_description'] = $thepost->post_excerpt;
+	$new_product['originalprice'] = number_format((double)get_post_meta($thepost->ID,'_price', 1), FOXYSHOP_DECIMAL_PLACES,".","");
+	$new_product['quantity_min'] = (int)get_post_meta($thepost->ID,'_quantity_min', 1);
+	$new_product['quantity_max'] = (int)get_post_meta($thepost->ID,'_quantity_max', 1);
+	$new_product['quantity_max_original'] = $new_product['quantity_max'];
+	$new_product['quantity_hide'] = get_post_meta($thepost->ID,'_quantity_hide', 1);
+	$new_product['hide_product'] = get_post_meta($thepost->ID,'_hide_product', 1);
+	$new_product['url'] = get_bloginfo("url") . FOXYSHOP_URL_BASE . '/' . apply_filters('foxyshop_product_url_slug', FOXYSHOP_PRODUCTS_SLUG, $thepost->ID) . '/' . $thepost->post_name . '/';
+	$new_product['post_date'] = strtotime($thepost->post_date);
+
+	//All fields that are loaded straight in without changing or checking data
+	$fields = array('category', 'related_products', 'bundled_products', 'addon_products', 'discount_quantity_amount', 'discount_quantity_percentage', 'discount_price_amount', 'discount_price_percentage', 'sub_frequency');
+	foreach ($fields as $fieldname) {
+		$new_product[$fieldname] = get_post_meta($thepost->ID,'_'.$fieldname, 1);
+	}
+
+	//Calculate Subscription Start
+	$foxycart_last_chars = array("m","d","y");
+	$sub_startdate = get_post_meta($thepost->ID,'_sub_startdate', 1);
+	if ($sub_startdate) {
+		$last_char = strtolower(substr($sub_startdate, -1));
+		if (!in_array($last_char, $foxycart_last_chars) && $sub_startdate != preg_replace("/[^0-9]/","", $sub_startdate)) $sub_startdate = date("Ymd", strtotime($sub_startdate));
+	}
+	$new_product['sub_startdate'] = $sub_startdate;
+
+	//Calculate Subscription End
+	$sub_enddate = get_post_meta($thepost->ID,'_sub_enddate', 1);
+	if ($sub_enddate) {
+		$last_char = strtolower(substr($sub_enddate, -1));
+		if (!in_array($last_char, $foxycart_last_chars) && $sub_enddate != preg_replace("/[^0-9]/","", $sub_enddate)) $sub_enddate = date("Ymd", strtotime($sub_enddate));
+	}
+	$new_product['sub_enddate'] = $sub_enddate;
+
+	//Convert Weight
+	$original_weight = get_post_meta($thepost->ID,'_weight',1);
+	$weight = explode(" ", $original_weight);
+	if (count($weight) == 1) $weight = explode(" ", $foxyshop_settings['default_weight']);
+	$weight1 = (int)$weight[0];
+	$weight2 = (double)$weight[1];
+	if ($weight1 == 0 && $weight2 == 0) {
+		$defaultweight = explode(" ",$foxyshop_settings['default_weight']);
+		$weight1 = (int)$defaultweight[0];
+		$weight2 = (count($defaultweight) > 1 ? (double)$defaultweight[1] : 0);
+	}
+	if ($weight2 > 0) $weight2 = number_format($weight2 / ($foxyshop_settings['weight_type'] == 'metric' ? 1000 : 16), 3);
+	$arr_weight2 = explode('.', $weight2);
+	$weight2 = ((strpos($weight2, '.') !== false) ? end($arr_weight2) : $weight2);
+	if ($original_weight) {
+		$new_product['weight'] = $weight1 . "." . $weight2;
+	} else {
+			$new_product['weight'] = "";
+	}
+
+	//Variations
+	$new_product['variations'] = get_post_meta($thepost->ID,'_variations',1);
+	if (!is_array($new_product['variations'])) $new_product['variations'] = array();
+
+	//Inventory
+	$new_product['inventory_levels'] = get_post_meta($thepost->ID,'_inventory_levels',1);
+	if (!is_array($new_product['inventory_levels'])) $new_product['inventory_levels'] = array();
+	if (array_key_exists($new_product['code'], $new_product['inventory_levels'])) {
+		if ($new_product['inventory_levels'][$new_product['code']]['count'] > $new_product['quantity_max']) $new_product['quantity_max'] = $new_product['inventory_levels'][$new_product['code']]['count'];
+	}
+
+	//Images
+	$new_product['images'] = array();
+	if (!$shortcut) {
+
+		//Get Featured Image
+		$imageNumber = 0;
+		$feat_img = get_field('feat_img', $thepost->ID);
+		if ( $feat_img ) {
+			$featuredImageID = $feat_img;
+		} else {
+			//$featuredImageID = (has_post_thumbnail($thepost->ID) ? get_post_thumbnail_id($thepost->ID) : 0);
+			$featuredImageID = 57;
+		}
+
+		//Get Attachments
+		$attachments = get_posts(array('numberposts' => -1, 'post_type' => 'attachment','post_status' => null,'post_parent' => $thepost->ID, "post_mime_type" => "image", 'order' => 'ASC','orderby' => 'menu_order'));
+
+		//Search For Featured Image in Attachments
+		$featured_image_in_attachments = false;
+		foreach ($attachments as $cur_value) {
+			if ($cur_value->ID == $featuredImageID) {
+				$featured_image_in_attachments = true;
+			}
+		}
+		if ($featuredImageID && (!$attachments || !$featured_image_in_attachments)) {
+			$attachments = array_merge($attachments, get_posts(array("p" => $featuredImageID, 'post_type' => 'attachment', "post_mime_type" => "image")));
+		}
+		$sizes = get_intermediate_image_sizes();
+		$sizes[] = 'full';
+		foreach ($attachments as $attachment) {
+			$imageTitle = $attachment->post_title;
+			$new_product['images'][$imageNumber] = array(
+				"id" => $attachment->ID,
+				"title" => $imageTitle,
+				"hide_from_slideshow" => (get_post_meta($attachment->ID, "_foxyshop_hide_image", 1) ? 1 : 0)
+			);
+			foreach($sizes as $size) {
+				$sizearray = wp_get_attachment_image_src($attachment->ID, $size);
+				$new_product['images'][$imageNumber][$size] = $sizearray[0];
+			}
+			$new_product['images'][$imageNumber]["featured"] = $featuredImageID == $attachment->ID || ($featuredImageID == 0 && $imageNumber == 0) ? 1 : 0;
+			$imageNumber++;
+		}
+	}
+
+	//Sale Price
+	$salestartdate = get_post_meta($thepost->ID,'_salestartdate',1);
+	$saleenddate = get_post_meta($thepost->ID,'_saleenddate',1);
+	if ($salestartdate == '999999999999999999') $salestartdate = 0;
+	if ($saleenddate == '999999999999999999') $saleenddate = 0;
+	if (get_post_meta($thepost->ID,'_saleprice', 1) > 0) {
+		$beginningOK = (strtotime("now") > $salestartdate);
+		$endingOK = (strtotime("now") < ($saleenddate + 86400) || $saleenddate == 0);
+		if ($beginningOK && $endingOK || ($salestartdate == 0 && $saleenddate == 0)) {
+			$new_product['price'] = number_format((double)get_post_meta($thepost->ID,'_saleprice', 1),FOXYSHOP_DECIMAL_PLACES,".","");
+		} else {
+			$new_product['price'] = number_format((double)get_post_meta($thepost->ID,'_price', 1),FOXYSHOP_DECIMAL_PLACES,".","");
+		}
+	} else {
+		$new_product['price'] = number_format((double)get_post_meta($thepost->ID,'_price', 1),FOXYSHOP_DECIMAL_PLACES,".","");
+	}
+
+	//Price Filters
+	$new_product['originalprice'] = apply_filters("foxyshop_price_adjustment", $new_product['originalprice']);
+	$new_product['price'] = apply_filters("foxyshop_price_adjustment", $new_product['price']);
+
+	//Extra Cart Parameters
+	$fields = array('cart','empty','coupon','redirect','output','_cart','_empty','_coupon');
+	foreach ($fields as $fieldname) {
+		if (get_post_meta($thepost->ID, $fieldname, true)) {
+			$new_product[str_replace("_", "", $fieldname)] = get_post_meta($thepost->ID,$fieldname, true);
+		}
+	}
+
+	//Expires
+	$expires = get_post_meta($thepost->ID, '_expires', true);
+	if ($expires) {
+		$new_product['expires'] = strpos($expires, "-") ? strtotime($expires) : $expires;
+	}
+
+
+	//Hook To Add Your Own Function to Update the $new_product array with your own data
+	if (has_filter('foxyshop_setup_product_info')) $new_product = apply_filters('foxyshop_setup_product_info', $new_product, $thepost->ID);
+
+	return $new_product;
+}
+?>
