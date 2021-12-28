@@ -1,5 +1,3 @@
-...
-
 ```php
 <?php // Custom foxyshop_setup_product function to set custom featured image for FoxyCart using ACF custom field data
 // Sets up the $product array
